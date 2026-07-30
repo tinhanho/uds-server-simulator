@@ -20,9 +20,9 @@
     },
 
     "TBOX": {
-        "func_req_id": "",
-        "phy_req_id": "0x733",
-        "phy_resp_id": "0x73B",
+        "func_req_id": "0x7DF",
+        "phy_req_id": "0x7E0",
+        "phy_resp_id": "0x7E8",
         "DID_No_Security": {
             "0xF18B": "2023.06.10"
         },
@@ -43,6 +43,11 @@
             "0x1053": "5670",
             "0x1059": "adminlog",
             "0x105A": "p4ssw0rdlog"
+        },
+        "DID_MMC":{
+            "0xF187": "MWCT2026AA",
+            "0xF188": "MWCT2026AB",
+            "0xF18A": "MWCT2026AC"
         },
         "DID_IO_Control": []
     },

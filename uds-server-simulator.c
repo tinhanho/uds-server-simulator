@@ -25,6 +25,7 @@
 #include <unistd.h>
 #include <sys/select.h>
 #include <sys/time.h>
+#include <pthread.h>
 
 #include "uds-server-simulator.h"
 #include "third/cJSON.h"
@@ -71,6 +72,10 @@ int ggBufCounter = 0;
 
 
 /********************************** DID Supported Start **********************************/
+/* DID for mmc*/
+int DID_MMC[100] = {};
+int DID_MMC_Num = 0;
+
 /* DID for 22 & 2E services, write DID value without authentication */
 int DID_No_Security[100] = {0};
 int DID_No_Security_Num = 0;
@@ -201,10 +206,11 @@ void uds_server_init(cJSON *root, char *ecu) {
         exit(1);
     }
 
+    DID_MMC_Num = DID_assignment(items, "DID_MMC", DID_MMC);
     DID_No_Security_Num = DID_assignment(items, "DID_No_Security", DID_No_Security);
     DID_Security_03_Num = DID_assignment(items, "DID_Security_03", DID_Security_03);
     DID_Security_19_Num = DID_assignment(items, "DID_Security_19", DID_Security_19);
-    DID_NUM = (DID_No_Security_Num + DID_Security_03_Num + DID_Security_19_Num);
+    DID_NUM = (DID_MMC_Num + DID_No_Security_Num + DID_Security_03_Num + DID_Security_19_Num);
 
     DID_IO_Control_Num = DID_assignment(items, "DID_IO_Control", DID_IO_Control);
 }
@@ -239,7 +245,7 @@ void udelay(int min) {
 
 char int2nibble(int two_char, int position) {
     if (position != 0 && position != 1)
-        return NULL;
+        return '\0';
     char str[2];
     sprintf(str, "%02x", two_char);
     return str[position];
@@ -265,10 +271,10 @@ uint8_t *seed_generate(int sl) {
     uint8_t *seed_ptr = (uint8_t *)malloc(sizeof(uint8_t) * 4); // store 27's 4-byte seed
     
     if (sl == 0x03) {
-        seed_ptr[0] = 0x00;
-        seed_ptr[1] = 0x00;
-        seed_ptr[2] = 0x00;
-        seed_ptr[3] = 0x00;
+        seed_ptr[0] = 0xaa;
+        seed_ptr[1] = 0xbb;
+        seed_ptr[2] = 0xcc;
+        seed_ptr[3] = 0xdd;
         return seed_ptr;
     }
 
@@ -524,6 +530,10 @@ int isIncorrectMessageLengthOrInvalidFormat(struct can_frame frame) {
 
 /* NRC 0x31 requestOutOfRange */
 int isRequestOutOfRange(unsigned int did) {
+    for (int i = 0; i < DID_MMC_Num; i++) {
+        if (did == DID_MMC[i])
+            return 0;
+    }
     for (int i = 0; i < DID_No_Security_Num; i++) {
         if (did == DID_No_Security[i])
             return 0;
@@ -584,7 +594,7 @@ int isServiceNotSupportedInActiveSession() {
     if ((delta_seconds >= 0 && delta_seconds < S3Server_timer) || (delta_seconds == S3Server_timer && delta_microseconds <= 0))
         return 0;
 
-    return SERVICE_NOT_SUPPORTED_IN_ACTIVE_SESSION;
+    return -1;
 }
 /********************************** NRC Handle End **********************************/
 
@@ -616,6 +626,8 @@ void session_mode_change(int can, struct can_frame frame) {
         change_to_non_default_session_seconds = currentTime.tv_sec;
         change_to_non_default_session_microseconds = currentTime.tv_usec;
     }
+
+    printf("## current_session_mode = %#x\n", current_session_mode);
 }
 
 void tester_present(int can, struct can_frame frame) {
@@ -883,11 +895,8 @@ int isSFExisted(int can, int sid, int sf) {
 }
 
 int isNonDefaultModeTimeout(int can, int sid) {
-    int nrc_7F = isServiceNotSupportedInActiveSession();
-    if (nrc_7F != 0) {
-        current_session_mode = 0x01;
-        reset_relevant_variables();
-        send_negative_response(can, sid, nrc_7F);
+    if (current_session_mode == 0x01) {
+        send_negative_response(can, sid, SERVICE_NOT_SUPPORTED_IN_ACTIVE_SESSION);
         return -1;
     }
     return 0 ;
@@ -1155,6 +1164,21 @@ cJSON *read_config(){
     return root;
 }
 
+
+void *thread10ms(void *arg) {
+    while(1){
+        int res = isServiceNotSupportedInActiveSession();
+        if (res == -1) {
+            if(current_session_mode!=0x01){
+                printf("## Session mode %d Timeout\n", current_session_mode);
+                current_session_mode = 0x01;
+            }
+            reset_relevant_variables();
+        }
+        usleep(10000);
+    }
+}
+
 int main(int argc, char *argv[]) {  // referred to Craig Smith's uds-server.
     int opt, ret;
     int can;
@@ -1219,6 +1243,11 @@ int main(int argc, char *argv[]) {  // referred to Craig Smith's uds-server.
     msg.msg_controllen = sizeof(ctrlmsg);
     msg.msg_flags = 0;
 
+    /* 10 ms task call thread10ms*/
+    pthread_t thread;
+    pthread_create(&thread, NULL, thread10ms, NULL);
+    pthread_detach(thread);
+
     int running = 1;
     while (running) {
         FD_ZERO(&rdfs);
@@ -1245,6 +1274,8 @@ int main(int argc, char *argv[]) {  // referred to Craig Smith's uds-server.
             handle_pkt(can, frame);
         }
     }
+
+
 
     printf("Got Interrupt.  Shutting down gracefully\n");
 }
