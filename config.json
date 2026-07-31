@@ -28,7 +28,7 @@
         },
         "DID_Security_03": {
             "0xF180": "boot v1.0.1", 
-            "0xF187": "TBOX v1.2.1"
+            "0xFFFF": "TBOX v1.2.1" 
         },
         "DID_Security_19": {
             "0xF190": "LUAU2AUB3GE383467",

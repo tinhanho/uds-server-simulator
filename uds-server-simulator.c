@@ -69,7 +69,7 @@ uint8_t ggBuffer[256] = {0};
 int ggBufSize = 0;
 int ggBufLengthRemaining = 0;
 int ggBufCounter = 0;
-
+int ggBufSizeSave = 0;
 
 /********************************** DID Supported Start **********************************/
 /* DID for mmc*/
@@ -231,6 +231,7 @@ void reset_relevant_variables() { // when session mode changed
     gBufCounter = 0;
     memset(gBuffer, 0, sizeof(gBuffer));
     ggBufSize = 0;
+    ggBufSizeSave = 0;
     ggBufLengthRemaining = 0;
     ggBufCounter = 0;
     memset(ggBuffer, 0, sizeof(ggBuffer));
@@ -555,6 +556,10 @@ int isRequestOutOfRange(unsigned int did) {
 
 /* NRC 0x33 securityAccessDenied */
 int isSecurityAccessDenied(unsigned int did) { 
+    for (int i = 0; i < DID_MMC_Num; i++) {
+        if (did == DID_MMC[i])
+            return 0;
+    }
     for (int i = 0; i < DID_No_Security_Num; i++) {
         if (did == DID_No_Security[i])
             return 0;
@@ -689,6 +694,7 @@ void write_data_by_id(int can, struct can_frame frame) {
     // reset relevant buffer
     memset(ggBuffer, 0, sizeof(ggBuffer));
     ggBufSize = 0;
+    ggBufSizeSave = 0;
     ggBufLengthRemaining = 0;
     ggBufCounter = 0;
 
@@ -712,6 +718,13 @@ void write_data_by_id(int can, struct can_frame frame) {
             if(pairs[i].key == did) {
                 memset(pairs[i].value, 0, sizeof(pairs[i].value));    // clear the original value
                 strncpy(pairs[i].value, &frame.data[4], frame.data[0]-3);
+                char str[30];
+                snprintf(str, sizeof(str), "%lx", pairs[i].key);
+                printf("key: %s ", str);
+                for(int j=0; j<frame.data[0]-3; j++) {
+                    printf("%2X", pairs[i].value[j]);
+                }
+                printf("\n");
             }
         }
 
@@ -728,8 +741,17 @@ void write_data_by_id(int can, struct can_frame frame) {
         write(can, &resp, CAN_MTU);
     }
     if (first_char == '1') {
+        for(int i=0; i<DID_NUM; i++) {
+            if(pairs[i].key == did) {
+                char str[30];
+                snprintf(str, sizeof(str), "%lx", pairs[i].key);
+                printf("key: %s ", str);
+            }
+        }
+
         ggBufSize = ((frame.data[0] & 0x0000000F) << 8) | frame.data[1];
         ggBufSize-=3;
+        ggBufSizeSave = ggBufSize;
         ggBufCounter = 0x21;
         ggBufLengthRemaining = ggBufSize - 3;
         memset(ggBuffer, 0, sizeof(ggBuffer));   // clear the original value
@@ -910,6 +932,14 @@ void handle_pkt(int can, struct can_frame frame) {
     // }
     // printf("\n");
 
+    /* padding */
+    if(frame.can_dlc != 8) {
+        for(int i=frame.can_dlc; i<8; i++) {
+            frame.data[i] = 0;
+        }
+        frame.can_dlc = 8;
+    }
+
     /* used for $2F */
     if (io_control_id_flag == 1) { 
         struct timeval currentTime;
@@ -1079,6 +1109,12 @@ void handle_pkt(int can, struct can_frame frame) {
                 resp.data[6] = 0x00;
                 resp.data[7] = 0x00;
                 write(can, &resp, CAN_MTU);
+                
+                for(int i=0; i<ggBufSizeSave; ++i){
+                    printf("%2X ", ggBuffer[i]);
+                }
+                printf("\n");
+
                 memset(tmp_store, 0, sizeof(tmp_store));
                 memset(ggBuffer, 0, sizeof(ggBuffer));
             }
@@ -1260,7 +1296,7 @@ int main(int argc, char *argv[]) {  // referred to Craig Smith's uds-server.
             running = 0;
             continue;
         }
-
+        
         if (FD_ISSET(can, &rdfs)) {
             nbytes = recvmsg(can, &msg, 0);
             if (nbytes < 0) {

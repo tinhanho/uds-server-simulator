@@ -48,7 +48,7 @@ case "$1" in
 
 
   "SecurityTest")
-    ./uds.sh extendedDiagnosticSession ; ./uds.sh SecurityAccess requestSeed ; ./uds.sh SecurityAccess sendKey deadbeef
+    ./uds-client.sh SecurityAccess requestSeed ; ./uds-client.sh SecurityAccess sendKey deadbeef
   ;;
 
   "TestPresent")
@@ -57,6 +57,9 @@ case "$1" in
       sleep 4
     done 
     ;;
+
+  *)
+  echo "Invalid command"
 
 esac
 
