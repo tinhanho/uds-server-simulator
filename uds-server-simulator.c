@@ -72,9 +72,13 @@ int ggBufCounter = 0;
 int ggBufSizeSave = 0;
 
 /********************************** DID Supported Start **********************************/
-/* DID for mmc*/
-int DID_MMC[100] = {};
-int DID_MMC_Num = 0;
+/* DID ReadOnly for mmc*/
+int DID_MMC_R[100] = {};
+int DID_MMC_R_Num = 0;
+
+/* DID RW for mmc*/
+int DID_MMC_RW[100] = {};
+int DID_MMC_RW_Num = 0;
 
 /* DID for 22 & 2E services, write DID value without authentication */
 int DID_No_Security[100] = {0};
@@ -206,11 +210,13 @@ void uds_server_init(cJSON *root, char *ecu) {
         exit(1);
     }
 
-    DID_MMC_Num = DID_assignment(items, "DID_MMC", DID_MMC);
+    
+    DID_MMC_R_Num = DID_assignment(items, "DID_MMC_R", DID_MMC_R);
+    DID_MMC_RW_Num = DID_assignment(items, "DID_MMC_RW", DID_MMC_RW);
     DID_No_Security_Num = DID_assignment(items, "DID_No_Security", DID_No_Security);
     DID_Security_03_Num = DID_assignment(items, "DID_Security_03", DID_Security_03);
     DID_Security_19_Num = DID_assignment(items, "DID_Security_19", DID_Security_19);
-    DID_NUM = (DID_MMC_Num + DID_No_Security_Num + DID_Security_03_Num + DID_Security_19_Num);
+    DID_NUM = (DID_MMC_R_Num + DID_MMC_RW_Num + DID_No_Security_Num + DID_Security_03_Num + DID_Security_19_Num);
 
     DID_IO_Control_Num = DID_assignment(items, "DID_IO_Control", DID_IO_Control);
 }
@@ -530,9 +536,13 @@ int isIncorrectMessageLengthOrInvalidFormat(struct can_frame frame) {
 }
 
 /* NRC 0x31 requestOutOfRange */
-int isRequestOutOfRange(unsigned int did) {
-    for (int i = 0; i < DID_MMC_Num; i++) {
-        if (did == DID_MMC[i])
+int isRequestOutOfRange(unsigned int did, bool isWrite) {
+    for (int i = 0; i < DID_MMC_R_Num; i++) {
+        if (did == DID_MMC_R[i] && !isWrite)
+            return 0;
+    }   
+    for (int i = 0; i < DID_MMC_RW_Num; i++) {
+        if (did == DID_MMC_RW[i])
             return 0;
     }
     for (int i = 0; i < DID_No_Security_Num; i++) {
@@ -556,8 +566,12 @@ int isRequestOutOfRange(unsigned int did) {
 
 /* NRC 0x33 securityAccessDenied */
 int isSecurityAccessDenied(unsigned int did) { 
-    for (int i = 0; i < DID_MMC_Num; i++) {
-        if (did == DID_MMC[i])
+    // for (int i = 0; i < DID_MMC_R_Num; i++) {
+    //     if (did == DID_MMC_R[i] && current_security_level != 0x00)
+    //         return 0;
+    // }
+    for (int i = 0; i < DID_MMC_RW_Num; i++) {
+        if (did == DID_MMC_RW[i] && current_security_level != 0x00)
             return 0;
     }
     for (int i = 0; i < DID_No_Security_Num; i++) {
@@ -670,7 +684,7 @@ void read_data_by_id(int can, struct can_frame frame) {
     gBufCounter = 0;
 
     unsigned int did = get_did_from_frame(frame);
-    int nrc_31 = isRequestOutOfRange(did);
+    int nrc_31 = isRequestOutOfRange(did, RD);
     if (nrc_31 != 0) {
         send_negative_response(can, UDS_SID_READ_DATA_BY_ID, nrc_31);
         return;
@@ -699,7 +713,7 @@ void write_data_by_id(int can, struct can_frame frame) {
     ggBufCounter = 0;
 
     unsigned int did = get_did_from_frame(frame);
-    int nrc_31 = isRequestOutOfRange(did);
+    int nrc_31 = isRequestOutOfRange(did, WT);
     if (nrc_31 != 0) {
         send_negative_response(can, UDS_SID_WRITE_DATA_BY_ID, nrc_31);
         return;
@@ -868,9 +882,10 @@ void security_access(int can, struct can_frame frame) {
     }
 }
 
+/* No supported in MMC */
 void io_control_by_did(int can, struct can_frame frame) {
     unsigned int did = get_did_from_frame(frame);
-    int nrc_31 = isRequestOutOfRange(did);
+    int nrc_31 = isRequestOutOfRange(did, WT);
     if (nrc_31 != 0) {
         send_negative_response(can, UDS_SID_IO_CONTROL_BY_ID, nrc_31);
         return;

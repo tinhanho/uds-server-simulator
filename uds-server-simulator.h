@@ -50,3 +50,5 @@
 
 /* Others */
 #define SECURITY_ACCESS_ERROR_LIMIT_NUM     3
+#define RD 0
+#define WT 1

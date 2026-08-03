@@ -31,7 +31,7 @@
             "0xFFFF": "TBOX v1.2.1" 
         },
         "DID_Security_19": {
-            "0xF190": "LUAU2AUB3GE383467",
+            "0xFFFE": "LUAU2AUB3GE383467",
             "0xF197": "TBOX",
             "0x011B": "CMIOTICV.CN",
             "0x011C": "172.16.17.59",
@@ -44,7 +44,10 @@
             "0x1059": "adminlog",
             "0x105A": "p4ssw0rdlog"
         },
-        "DID_MMC":{
+        "DID_MMC_RW":{
+            "0xF190": "MWCT2026AD"
+        },
+        "DID_MMC_R":{
             "0xF187": "MWCT2026AA",
             "0xF188": "MWCT2026AB",
             "0xF18A": "MWCT2026AC"
