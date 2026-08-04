@@ -13,8 +13,13 @@ case "$1" in
     cansend $INTERFACE ${PHY_ID}#0322${DID}00000000
     ;;
 
-  "extendedDiagnosticSession")
-    cansend $INTERFACE ${FUN_ID}#021003000000000000
+  "DiagnosticSessionControl")
+    par="$2"
+    if [ "$par" = "ProgrammingSession" ]; then 
+      cansend $INTERFACE ${FUN_ID}#021002000000000000
+    elif [ "$par" = "extendedDiagnosticSession" ]; then
+      cansend $INTERFACE ${FUN_ID}#021003000000000000
+    fi
     ;;
 
   "SecurityAccess")
@@ -28,8 +33,8 @@ case "$1" in
     ;;
 
   "WriteDataByIdentifier")
-    DID="F187"
-    RAW_DATA="$2"
+    DID="$2"
+    RAW_DATA="$3"
 
     DATA_CLEAN=$(echo "$RAW_DATA" | sed 's/0x//i' | tr 'a-z' 'A-Z')
 
@@ -51,13 +56,25 @@ case "$1" in
     ./uds-client.sh SecurityAccess requestSeed ; ./uds-client.sh SecurityAccess sendKey deadbeef
   ;;
 
-  "TestPresent")
+  "TesterPresent")
     while true; do
       cansend $INTERFACE ${PHY_ID}#023E000000000000
       sleep 4
     done 
     ;;
 
+  "RequestUpload")
+    cansend $INTERFACE ${PHY_ID}#0635002100000d00
+  ;;
+
+  "RequestTransferExit")
+    cansend $INTERFACE ${PHY_ID}#0137000000000000
+    ;;
+
+  "TransferData")
+    BS="$2"
+    cansend $INTERFACE ${PHY_ID}#0236${BS}0000000000
+    ;;
   *)
   echo "Invalid command"
 

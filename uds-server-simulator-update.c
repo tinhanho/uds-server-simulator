@@ -25,15 +25,12 @@
 #include <unistd.h>
 #include <sys/select.h>
 #include <sys/time.h>
-#include <pthread.h>
 
 #include "uds-server-simulator.h"
 #include "third/cJSON.h"
 
 /* Globals */
 char *version = "v1.1.2";
-
-FILE *fp;
 
 int io_control_id_flag = 0;             // 0-false 1-true
 long io_control_seconds = 0;
@@ -47,13 +44,16 @@ long change_to_non_default_session_seconds = 0;          // seconds part
 long change_to_non_default_session_microseconds = 0;     // microseconds part
 const long S3Server_timer = 5;                           // default 5s
 
-int current_session_mode = 1;           // default session mode(1), only support 1, 2 and 3 in this version.
-int current_security_level = 0;         // default not unlocked(0), only support 3 and 19 in this version.
+int current_session_mode = 1;           // default session mode(1), only support 1 and 3 in this version.
+int current_security_level = 0;         // default not unlocked(0), only support 3, 19 and 21 in this version.
 int current_security_phase_3 = 0;       // default 0, there are two phases: 1 and 2.
 int current_security_phase_19 = 0;      // default 0, there are two phases: 1 and 2.
+int current_security_phase_21 = 0;      // default 0, there are two phases: 1 and 2.
 uint8_t *current_seed_3 = NULL;         // store the current 27's seed of security level 0x03.
 uint8_t *current_seed_19 = NULL;        // store the current 27's seed of security level 0x19.
-int security_access_error_attempt = 0;  // store service 27 error attempt number, only limit sl 19.
+uint8_t *current_seed_21 = NULL;        // store the current 27's seed of security level 0x21.
+int security_access_error_attempt = 0;  // store service 27 error attempt number, only limit sl 19 and 21.
+unsigned long security_access_lock_time = 0;      // store the lock time of security access, only limit sl 19 and 21.
 
 uint8_t tmp_store[8] = {0};
 
@@ -75,23 +75,15 @@ int gBufSize = 0;
 int gBufLengthRemaining = 0;
 int gBufCounter = 0;
 
-/* This is for $2E flow control packets */
+/* This is for $2E and $36 flow control packets */
 uint8_t ggBuffer[256] = {0};
 int ggBufSize = 0;
 int ggBufLengthRemaining = 0;
 int ggBufCounter = 0;
-int ggBufSizeSave = 0;
 int ggSID = 0;
 
+
 /********************************** DID Supported Start **********************************/
-/* DID ReadOnly for mmc*/
-int DID_MMC_R[100] = {};
-int DID_MMC_R_Num = 0;
-
-/* DID RW for mmc*/
-int DID_MMC_RW[100] = {};
-int DID_MMC_RW_Num = 0;
-
 /* DID for 22 & 2E services, write DID value without authentication */
 int DID_No_Security[100] = {0};
 int DID_No_Security_Num = 0;
@@ -103,6 +95,10 @@ int DID_Security_03_Num = 0;
 /* DID for 22 & 2E services, write DID value with 27 19 */
 int DID_Security_19[100] = {0};
 int DID_Security_19_Num = 0;
+
+/* DID for 22 & 2E services, write DID value with 27 21 */
+int DID_Security_21[100] = {0};
+int DID_Security_21_Num = 0;
 
 /* DID number for 22 & 2E services */
 int DID_NUM = 0;
@@ -210,9 +206,8 @@ void uds_server_init(cJSON *root, char *ecu) {
     // 64K
     firmwareSpace = malloc(SPACE_SIZE);
     char* test_str = "Hello world";
-    strncpy(firmwareSpace, test_str, strlen(test_str)+1);
-    //fwrite(firmwareSpace, sizeof(uint8_t), 13, fp);
-    //fflush(fp);
+    strncpy(firmwareSpace, test_str, strlen(test_str));
+
     // for(int i=0; i<strlen(current_ecu); i++){
     //     *(current_ecu+i) = lower2upper(*(current_ecu+i));
     // }
@@ -228,13 +223,11 @@ void uds_server_init(cJSON *root, char *ecu) {
         exit(1);
     }
 
-    
-    DID_MMC_R_Num = DID_assignment(items, "DID_MMC_R", DID_MMC_R);
-    DID_MMC_RW_Num = DID_assignment(items, "DID_MMC_RW", DID_MMC_RW);
     DID_No_Security_Num = DID_assignment(items, "DID_No_Security", DID_No_Security);
     DID_Security_03_Num = DID_assignment(items, "DID_Security_03", DID_Security_03);
     DID_Security_19_Num = DID_assignment(items, "DID_Security_19", DID_Security_19);
-    DID_NUM = (DID_MMC_R_Num + DID_MMC_RW_Num + DID_No_Security_Num + DID_Security_03_Num + DID_Security_19_Num);
+    DID_Security_21_Num = DID_assignment(items, "DID_Security_21", DID_Security_21);
+    DID_NUM = (DID_No_Security_Num + DID_Security_03_Num + DID_Security_19_Num + DID_Security_21_Num);
 
     DID_IO_Control_Num = DID_assignment(items, "DID_IO_Control", DID_IO_Control);
 }
@@ -245,8 +238,10 @@ void reset_relevant_variables() { // when session mode changed
     current_security_level = 0;       
     current_security_phase_3 = 0;       
     current_security_phase_19 = 0;   
+    current_security_phase_21 = 0;  
     current_seed_3 = NULL;         
     current_seed_19 = NULL;      
+    current_seed_21 = NULL;  
     security_access_error_attempt = 0; 
     flow_control_flag = 0;
     st_min = 0;
@@ -275,7 +270,7 @@ void udelay(int min) {
 
 char int2nibble(int two_char, int position) {
     if (position != 0 && position != 1)
-        return '\0';
+        return NULL;
     char str[2];
     sprintf(str, "%02x", two_char);
     return str[position];
@@ -299,16 +294,15 @@ unsigned int get_did_from_frame(struct can_frame frame) {
 
 uint8_t *seed_generate(int sl) {
     uint8_t *seed_ptr = (uint8_t *)malloc(sizeof(uint8_t) * 4); // store 27's 4-byte seed
-    
-    if (sl == 0x03) {
-        seed_ptr[0] = 0xaa;
-        seed_ptr[1] = 0xbb;
-        seed_ptr[2] = 0xcc;
-        seed_ptr[3] = 0xdd;
+    if (sl == 0x03 || sl == current_security_level) {
+        seed_ptr[0] = 0x00;
+        seed_ptr[1] = 0x00;
+        seed_ptr[2] = 0x00;
+        seed_ptr[3] = 0x00;
         return seed_ptr;
     }
 
-    if (sl == 0x19) {
+    if (sl == 0x19 || sl == 0x21) {
         uint8_t str[3];
         int ret;
         int num;
@@ -334,7 +328,7 @@ uint8_t *security_algorithm(uint8_t *seed_ptr, int sl) {
         return key_ptr;
 	}
 
-    if (sl == 0x1A) {
+    if (sl == 0x1A || sl == 0x22) {
         uint8_t Seed[4];
         uint8_t Const[4];
         uint8_t Key[4];
@@ -470,7 +464,7 @@ int isSubFunctionSupported(int sid, int sf) {
                 return 0;
             break;
         case UDS_SID_SECURITY_ACCESS:
-            if (sf == 0x03 || sf == 0x04 || sf == 0x19 || sf == 0x1A)
+            if (sf == 0x03 || sf == 0x04 || sf == 0x19 || sf == 0x1A || sf == 0x21 || sf == 0x22)
                 return 0;
             break;
         case UDS_SID_READ_DATA_BY_ID:   // 0x22 No SF
@@ -561,16 +555,16 @@ int isIncorrectMessageLengthOrInvalidFormat(struct can_frame frame) {
     return -1;
 }
 
-/* NRC 0x31 requestOutOfRange */
-int isRequestOutOfRange(unsigned int did, bool isWrite) {
-    for (int i = 0; i < DID_MMC_R_Num; i++) {
-        if (did == DID_MMC_R[i] && !isWrite)
-            return 0;
-    }   
-    for (int i = 0; i < DID_MMC_RW_Num; i++) {
-        if (did == DID_MMC_RW[i])
+int isRequestSecurityAccessMember(unsigned int did) {
+    for (int k = 0; k < DID_Security_21_Num; k++) {
+        if (did == DID_Security_21[k])
             return 0;
     }
+    return -1;
+}
+
+/* NRC 0x31 requestOutOfRange */
+int isRequestOutOfRange(unsigned int did) {
     for (int i = 0; i < DID_No_Security_Num; i++) {
         if (did == DID_No_Security[i])
             return 0;
@@ -583,6 +577,10 @@ int isRequestOutOfRange(unsigned int did, bool isWrite) {
         if (did == DID_Security_19[k])
             return 0;
     }
+    for (int k = 0; k < DID_Security_21_Num; k++) {
+        if (did == DID_Security_21[k])
+            return 0;
+    }
     for (int l = 0; l < DID_IO_Control_Num; l++) {
         if (did == DID_IO_Control[l])
             return 0;
@@ -592,14 +590,6 @@ int isRequestOutOfRange(unsigned int did, bool isWrite) {
 
 /* NRC 0x33 securityAccessDenied */
 int isSecurityAccessDenied(unsigned int did) { 
-    // for (int i = 0; i < DID_MMC_R_Num; i++) {
-    //     if (did == DID_MMC_R[i] && current_security_level != 0x00)
-    //         return 0;
-    // }
-    for (int i = 0; i < DID_MMC_RW_Num; i++) {
-        if (did == DID_MMC_RW[i] && current_security_level != 0x00)
-            return 0;
-    }
     for (int i = 0; i < DID_No_Security_Num; i++) {
         if (did == DID_No_Security[i])
             return 0;
@@ -610,6 +600,10 @@ int isSecurityAccessDenied(unsigned int did) {
     }
     for (int k = 0; k < DID_Security_19_Num; k++) {
         if (did == DID_Security_19[k] && current_security_level == 0x19)
+            return 0;
+    }
+    for (int k = 0; k < DID_Security_21_Num; k++) {
+        if (did == DID_Security_21[k] && current_security_level == 0x21)
             return 0;
     }
     for (int l = 0; l < DID_IO_Control_Num; l++) {
@@ -639,7 +633,7 @@ int isServiceNotSupportedInActiveSession() {
     if ((delta_seconds >= 0 && delta_seconds < S3Server_timer) || (delta_seconds == S3Server_timer && delta_microseconds <= 0))
         return 0;
 
-    return -1;
+    return SERVICE_NOT_SUPPORTED_IN_ACTIVE_SESSION;
 }
 /********************************** NRC Handle End **********************************/
 
@@ -671,8 +665,6 @@ void session_mode_change(int can, struct can_frame frame) {
         change_to_non_default_session_seconds = currentTime.tv_sec;
         change_to_non_default_session_microseconds = currentTime.tv_usec;
     }
-
-    printf("## current_session_mode = %#x\n", current_session_mode);
 }
 
 void tester_present(int can, struct can_frame frame) {
@@ -710,7 +702,16 @@ void read_data_by_id(int can, struct can_frame frame) {
     gBufCounter = 0;
 
     unsigned int did = get_did_from_frame(frame);
-    int nrc_31 = isRequestOutOfRange(did, RD);
+    
+    if (isRequestSecurityAccessMember(did) == 0) {
+        int nrc_33 = isSecurityAccessDenied(did);
+        if (nrc_33 != 0) {
+            send_negative_response(can, UDS_SID_READ_DATA_BY_ID, nrc_33);
+            return;
+        }
+    }
+
+    int nrc_31 = isRequestOutOfRange(did);
     if (nrc_31 != 0) {
         send_negative_response(can, UDS_SID_READ_DATA_BY_ID, nrc_31);
         return;
@@ -734,12 +735,11 @@ void write_data_by_id(int can, struct can_frame frame) {
     // reset relevant buffer
     memset(ggBuffer, 0, sizeof(ggBuffer));
     ggBufSize = 0;
-    ggBufSizeSave = 0;
     ggBufLengthRemaining = 0;
     ggBufCounter = 0;
 
     unsigned int did = get_did_from_frame(frame);
-    int nrc_31 = isRequestOutOfRange(did, WT);
+    int nrc_31 = isRequestOutOfRange(did);
     if (nrc_31 != 0) {
         send_negative_response(can, UDS_SID_WRITE_DATA_BY_ID, nrc_31);
         return;
@@ -758,13 +758,6 @@ void write_data_by_id(int can, struct can_frame frame) {
             if(pairs[i].key == did) {
                 memset(pairs[i].value, 0, sizeof(pairs[i].value));    // clear the original value
                 strncpy(pairs[i].value, &frame.data[4], frame.data[0]-3);
-                char str[30];
-                snprintf(str, sizeof(str), "%lx", pairs[i].key);
-                printf("key: %s ", str);
-                for(int j=0; j<frame.data[0]-3; j++) {
-                    printf("%2X", pairs[i].value[j]);
-                }
-                printf("\n");
             }
         }
 
@@ -781,18 +774,10 @@ void write_data_by_id(int can, struct can_frame frame) {
         write(can, &resp, CAN_MTU);
     }
     if (first_char == '1') {
-        for(int i=0; i<DID_NUM; i++) {
-            if(pairs[i].key == did) {
-                char str[30];
-                snprintf(str, sizeof(str), "%lx", pairs[i].key);
-                printf("key: %s ", str);
-            }
-        }
-
         ggBufSize = ((frame.data[0] & 0x0000000F) << 8) | frame.data[1];
         ggBufSize-=3;
-        ggBufSizeSave = ggBufSize;
         ggBufCounter = 0x21;
+        ggSID = UDS_SID_WRITE_DATA_BY_ID;
         ggBufLengthRemaining = ggBufSize - 3;
         memset(ggBuffer, 0, sizeof(ggBuffer));   // clear the original value
         strncpy(ggBuffer, &frame.data[5], 3);
@@ -822,7 +807,7 @@ void security_access(int can, struct can_frame frame) {
     struct can_frame resp;
 
     /* 27 first phase: request a 4-byte seed from server */
-    if (sl == 0x03 || sl == 0x19) {
+    if (sl == 0x03 || sl == 0x19 || sl == 0x21) {
 		seedp = seed_generate(sl);
         resp.can_id = diag_phy_resp_id;
         resp.can_dlc = 8;
@@ -835,19 +820,25 @@ void security_access(int can, struct can_frame frame) {
         resp.data[6] = *(seedp+3);
         resp.data[7] = 0x00;
         write(can, &resp, CAN_MTU);
-        if (sl == 0x03) {
-            current_seed_3 = seedp;
-            current_security_phase_3 = 1;
-        }
-        if (sl == 0x19) {
-            current_seed_19 = seedp;
-            current_security_phase_19 = 1;
+        if (sl != current_security_level) {
+            if (sl == 0x03) {
+                current_seed_3 = seedp;
+                current_security_phase_3 = 1;
+            }
+            if (sl == 0x19) {
+                current_seed_19 = seedp;
+                current_security_phase_19 = 1;
+            }
+            if (sl == 0x21) {
+                current_seed_21 = seedp;
+                current_security_phase_21 = 1;
+            }
         }
         return;
     }
-    if (sl == 0x04 || sl == 0x1A) {
+    if (sl == 0x04 || sl == 0x1A || sl == 0x22) {
         /* must request seed firstly */
-        if ((sl == 0x04 && current_security_phase_3 != 1) || (sl == 0x1A && current_security_phase_19 != 1)) {
+        if ((sl == 0x04 && current_security_phase_3 != 1) || (sl == 0x1A && current_security_phase_19 != 1) || (sl == 0x22 && current_security_phase_21 != 1)) {
             send_negative_response(can, UDS_SID_SECURITY_ACCESS, REQUEST_SEQUENCE_ERROR);
             return;
         }
@@ -859,6 +850,9 @@ void security_access(int can, struct can_frame frame) {
         }    
         if (sl == 0x1A && current_seed_19 != NULL && current_security_phase_19 ==1) {
             keyp = security_algorithm(current_seed_19, sl);
+        } 
+        if (sl == 0x22 && current_seed_21 != NULL && current_security_phase_21 ==1) {
+            keyp = security_algorithm(current_seed_21, sl);
         } 
         /* determine the passed key is right or not */
         if (*keyp == frame.data[3] && *(keyp+1) == frame.data[4] \
@@ -883,6 +877,12 @@ void security_access(int can, struct can_frame frame) {
                 current_security_phase_19 = 2;
                 security_access_error_attempt = 0;
             }
+            if (sl == 0x22) {
+                current_security_level = sl-1;
+                current_security_phase_21 = 2;
+                security_access_error_attempt = 0;
+            }
+            security_access_lock_time = 0;
         } else {    // key is incorrect
             send_negative_response(can, UDS_SID_SECURITY_ACCESS, INVALID_KEY);
             if (sl == 0x04) {
@@ -892,10 +892,16 @@ void security_access(int can, struct can_frame frame) {
                 current_security_phase_19 = 0;
                 security_access_error_attempt += 1;
             }
+            if (sl == 0x22) {
+                current_security_phase_21 = 0;
+                security_access_error_attempt += 1;
+            }
         }
         /* determine the service 27 error attempt number is exceed or not */
         if (security_access_error_attempt >= SECURITY_ACCESS_ERROR_LIMIT_NUM) {
             send_negative_response(can, UDS_SID_SECURITY_ACCESS, EXCEED_NUMBER_OF_ATTEMPTS);
+            // store currect time
+            security_access_lock_time = time(NULL);
         }
         /* reset the global variables current_seed_* */
         if (sl == 0x04) {
@@ -904,14 +910,16 @@ void security_access(int can, struct can_frame frame) {
         if (sl == 0x1A) {
             current_seed_19 = NULL;
         }
+        if (sl == 0x22) {
+            current_seed_21 = NULL;
+        }
         return;
     }
 }
 
-/* No supported in MMC */
 void io_control_by_did(int can, struct can_frame frame) {
     unsigned int did = get_did_from_frame(frame);
-    int nrc_31 = isRequestOutOfRange(did, WT);
+    int nrc_31 = isRequestOutOfRange(did);
     if (nrc_31 != 0) {
         send_negative_response(can, UDS_SID_IO_CONTROL_BY_ID, nrc_31);
         return;
@@ -1114,8 +1122,11 @@ int isSFExisted(int can, int sid, int sf) {
 }
 
 int isNonDefaultModeTimeout(int can, int sid) {
-    if (current_session_mode == 0x01) {
-        send_negative_response(can, sid, SERVICE_NOT_SUPPORTED_IN_ACTIVE_SESSION);
+    int nrc_7F = isServiceNotSupportedInActiveSession();
+    if (nrc_7F != 0) {
+        current_session_mode = 0x01;
+        reset_relevant_variables();
+        send_negative_response(can, sid, nrc_7F);
         return -1;
     }
     return 0 ;
@@ -1128,14 +1139,6 @@ void handle_pkt(int can, struct can_frame frame) {
     //     printf("%02X ", frame.data[i]);
     // }
     // printf("\n");
-
-    /* padding */
-    if(frame.can_dlc != 8) {
-        for(int i=frame.can_dlc; i<8; i++) {
-            frame.data[i] = 0;
-        }
-        frame.can_dlc = 8;
-    }
 
     /* used for $2F */
     if (io_control_id_flag == 1) { 
@@ -1242,6 +1245,10 @@ void handle_pkt(int can, struct can_frame frame) {
                         return;
                     if (isSFExisted(can, sid, sf) == -1) 
                         return;
+                    if (security_access_lock_time != 0 && (time(NULL) - security_access_lock_time) < SECURITY_ACCESS_LOCK_DELAY) {
+                        send_negative_response(can, sid, REQUIRED_TIME_DELAY_NOT_EXPIRED);
+                        return;
+                    }
                     security_access(can, frame);
                     return;
                 } else {    // default session mode
@@ -1259,7 +1266,7 @@ void handle_pkt(int can, struct can_frame frame) {
                 } else {    // default session mode
                     send_negative_response(can, sid, SERVICE_NOT_SUPPORTED_IN_ACTIVE_SESSION);
                     return;
-                }
+                } 
             case UDS_SID_REQUEST_DOWNLOAD:
             case UDS_SID_REQUEST_UPLOAD:      // SID 0x34 or 0x35
                 if (current_session_mode != 0x02) {
@@ -1269,7 +1276,7 @@ void handle_pkt(int can, struct can_frame frame) {
                 } else if (current_security_level == 0x00) {
                     // MUST unlock the security access
                     send_negative_response(can, sid, SECURITY_ACCESS_DENIED);
-                    return; 
+                    return;
                 } else if (req_transfer_type != 0) {
                     send_negative_response(can, sid, CONDITIONS_NOT_CORRECT);
                     return;
@@ -1305,6 +1312,7 @@ void handle_pkt(int can, struct can_frame frame) {
                     xfer_exit(can, frame);
                     return;
                 }
+
             default:
                 send_negative_response(can, sid, SERVICE_NOT_SUPPORTED);
                 return;
@@ -1399,6 +1407,7 @@ void handle_pkt(int can, struct can_frame frame) {
             flow_control_push_to(can);
             flow_control_flag = 0;
         }
+
     }
 }
 
@@ -1458,24 +1467,7 @@ cJSON *read_config(){
     return root;
 }
 
-
-void *thread10ms(void *arg) {
-    while(1){
-        int res = isServiceNotSupportedInActiveSession();
-        if (res == -1) {
-            if(current_session_mode!=0x01){
-                printf("## Session mode %d Timeout\n", current_session_mode);
-                current_session_mode = 0x01;
-            }
-            reset_relevant_variables();
-        }
-        usleep(10000);
-    }
-}
-
 int main(int argc, char *argv[]) {  // referred to Craig Smith's uds-server.
-    //fp = fopen("firmware_space.bin", "wb");
-
     int opt, ret;
     int can;
     int nbytes;
@@ -1539,11 +1531,6 @@ int main(int argc, char *argv[]) {  // referred to Craig Smith's uds-server.
     msg.msg_controllen = sizeof(ctrlmsg);
     msg.msg_flags = 0;
 
-    /* 10 ms task call thread10ms*/
-    pthread_t thread;
-    pthread_create(&thread, NULL, thread10ms, NULL);
-    pthread_detach(thread);
-
     int running = 1;
     while (running) {
         FD_ZERO(&rdfs);
@@ -1556,7 +1543,7 @@ int main(int argc, char *argv[]) {  // referred to Craig Smith's uds-server.
             running = 0;
             continue;
         }
-        
+
         if (FD_ISSET(can, &rdfs)) {
             nbytes = recvmsg(can, &msg, 0);
             if (nbytes < 0) {
@@ -1570,8 +1557,6 @@ int main(int argc, char *argv[]) {  // referred to Craig Smith's uds-server.
             handle_pkt(can, frame);
         }
     }
-
-
 
     printf("Got Interrupt.  Shutting down gracefully\n");
 }

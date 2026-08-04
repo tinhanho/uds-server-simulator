@@ -54,5 +54,3 @@
 /* Others */
 #define SECURITY_ACCESS_ERROR_LIMIT_NUM     3
 #define SECURITY_ACCESS_LOCK_DELAY          5
-#define RD 0
-#define WT 1
